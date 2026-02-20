@@ -1,15 +1,16 @@
-
+import os
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import pdfplumber
-from io import BytesIO
-from .rules import evaluate_point
 
-app = FastAPI()
+from .parser import parse_stormgeo_pdf
+from .rules import Thresholds, evaluate_point, build_windows
 
+app = FastAPI(title="Weather GO/NO-GO API")
+
+cors = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[c.strip() for c in cors if c.strip()] if cors != ["*"] else ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -19,28 +20,30 @@ def health():
     return {"ok": True}
 
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    content = await file.read()
-    points = []
+async def analyze(
+    file: UploadFile = File(...),
+    ws50m_max_knots: float = 22.0,
+    hs_max_ft: float = 6.0,
+    tp_max_s: float = 5.0,
+    min_consecutive_points: int = 2,
+    tz_offset: str = "+04:00",
+):
+    pdf_bytes = await file.read()
 
-    with pdfplumber.open(BytesIO(content)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            for line in text.split("\n"):
-                parts = line.split()
-                if len(parts) >= 8 and ":" in parts[2]:
-                    try:
-                        ws50m = float(parts[4])
-                        hs = float(parts[6])
-                        tp = float(parts[8])
-                        p = {
-                            "time": parts[0] + " " + parts[1] + " " + parts[2],
-                            "ws50m_knots": ws50m,
-                            "hs_ft": hs,
-                            "tp_s": tp,
-                        }
-                        points.append(evaluate_point(p))
-                    except:
-                        continue
+    raw_points = parse_stormgeo_pdf(pdf_bytes, tz_offset=tz_offset)
+    t = Thresholds(ws50m_max_knots=ws50m_max_knots, hs_max_ft=hs_max_ft, tp_max_s=tp_max_s)
 
-    return {"points": points}
+    points = [evaluate_point(p, t) for p in raw_points]
+    windows = build_windows(points, min_consecutive_points=min_consecutive_points)
+
+    now = points[0] if points else {"pass": False, "failed": ["No data parsed from PDF"]}
+
+    return {
+        "thresholds": t.__dict__,
+        "count_points": len(points),
+        "now": now,
+        "windows": windows,
+        "next_window": windows[0] if windows else None,
+        "points": points,
+        "note": "If count_points=0, the PDF table layout may differ; share one PDF and I will tune the parser."
+    }
