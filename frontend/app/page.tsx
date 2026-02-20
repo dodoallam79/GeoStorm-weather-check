@@ -6,8 +6,9 @@ type Point = {
   time: string;
   ws50m_knots?: number;
   tp_s?: number;
-  hs_ft?: number;     // may exist
-  hmax_ft?: number;   // what we will use for criteria + daily summary
+  hs_ft?: number;
+  hmax_ft?: number;
+  dir?: string;
   pass: boolean;
   failed: string[];
 };
@@ -15,7 +16,11 @@ type Point = {
 type Window = { start: string; end: string; count_points: number };
 
 type Result = {
-  thresholds?: { ws50m_max_knots: number; hs_max_ft?: number; hmax_max_ft?: number; tp_max_s: number };
+  thresholds?: {
+    ws50m_max_knots?: number;
+    hmax_max_ft?: number;
+    tp_max_s?: number;
+  };
   count_points: number;
   now: Point;
   next_window: Window | null;
@@ -25,13 +30,12 @@ type Result = {
 };
 
 const CRITERIA = {
-  ws50mMax: 22,
-  hmaxMax: 6,
-  tpMax: 5.0,
+  ws50mMax: 22, // kts
+  hmaxMax: 6, // ft
+  tpMax: 5.0, // s
 };
 
 function dayNameFromISO(iso: string) {
-  // Works with ISO strings; uses browser locale
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase();
 }
@@ -43,26 +47,31 @@ function ddmmFromISO(iso: string) {
   return `${dd}/${mm}`;
 }
 
-function formatReasonFromValues(opts: {
-  ws50m?: number;
-  hmax?: number;
-  tp?: number;
-}) 
+function hhmmFromISO(iso: string) {
+  const d = new Date(iso);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
 
-{
+function formatReasonFromValues(opts: { ws50m?: number; hmax?: number; tp?: number }) {
   const parts: string[] = [];
 
-  if (opts.hmax !== undefined && opts.hmax >= CRITERIA.hmaxMax) {
+  if (opts.hmax !== undefined && Number.isFinite(opts.hmax) && opts.hmax >= CRITERIA.hmaxMax) {
     parts.push(`Sea ${opts.hmax}>${CRITERIA.hmaxMax}ft`);
   }
-  if (opts.tp !== undefined && opts.tp >= CRITERIA.tpMax) {
+  if (opts.tp !== undefined && Number.isFinite(opts.tp) && opts.tp >= CRITERIA.tpMax) {
     parts.push(`Tp ${opts.tp}>${CRITERIA.tpMax}s`);
   }
-  if (opts.ws50m !== undefined && opts.ws50m >= CRITERIA.ws50mMax) {
+  if (opts.ws50m !== undefined && Number.isFinite(opts.ws50m) && opts.ws50m >= CRITERIA.ws50mMax) {
     parts.push(`Wind ${opts.ws50m}>${CRITERIA.ws50mMax}kts`);
   }
 
   return parts.length ? parts.join(", ") : "Within limits";
+}
+
+function badgeFromPass(pass: boolean) {
+  return pass ? "SUITABLE" : "NOT SUITABLE";
 }
 
 export default function Page() {
@@ -79,17 +88,20 @@ export default function Page() {
 
   const location = useMemo(() => {
     if (!file?.name) return "—";
-    // Try to extract something like ABK_FIELD from filename
-    const name = file.name.replace(".pdf", "");
-    const m = name.match(/_([A-Z0-9]+_[A-Z0-9]+)_/i) || name.match(/_(ABK[_-]?FIELD)/i);
+    // try extract ABK_FIELD, ZIRKU_AREA, etc.
+    const n = file.name.replace(/\.pdf$/i, "");
+    const m = n.match(/_(ABK[_-]?FIELD)/i) || n.match(/_([A-Z]+_[A-Z]+)_\d{6,}/i) || n.match(/_([A-Z]+_[A-Z]+)_/i);
     const rawLoc = m?.[1] || "";
     const cleaned = rawLoc.replace(/[-_]/g, " ").trim();
     return cleaned ? cleaned.toUpperCase() : "—";
   }, [file?.name]);
 
-  const workableCount = useMemo(() => (data?.points || []).filter(p => p.pass).length, [data]);
-  const notWorkableCount = useMemo(() => (data?.points || []).filter(p => !p.pass).length, [data]);
-  const allMeet = useMemo(() => (data?.count_points || 0) > 0 && notWorkableCount === 0, [data, notWorkableCount]);
+  const workableCount = useMemo(() => (data?.points || []).filter((p) => p.pass).length, [data]);
+  const notWorkableCount = useMemo(() => (data?.points || []).filter((p) => !p.pass).length, [data]);
+  const allMeet = useMemo(
+    () => (data?.count_points || 0) > 0 && notWorkableCount === 0,
+    [data?.count_points, notWorkableCount]
+  );
 
   const dailySummary = useMemo(() => {
     const pts = data?.points || [];
@@ -101,50 +113,82 @@ export default function Page() {
     }
 
     const rows = Array.from(byDate.entries()).map(([ddmm, arr]) => {
-      const maxWind = Math.max(...arr.map(x => x.ws50m_knots ?? -Infinity));
-      const maxSea = Math.max(...arr.map(x => x.hmax_ft ?? -Infinity));
-      const maxTp = Math.max(...arr.map(x => x.tp_s ?? -Infinity));
+      const maxWind = Math.max(...arr.map((x) => x.ws50m_knots ?? -Infinity));
+      const maxSea = Math.max(...arr.map((x) => x.hmax_ft ?? -Infinity));
+      const maxTp = Math.max(...arr.map((x) => x.tp_s ?? -Infinity));
 
-      // day is suitable only if ALL points in that day pass
-      const dayPass = arr.every(x => x.pass);
+      const dayPass = arr.every((x) => x.pass);
 
-      // pick first failing reason from any failed point
-      const firstFail = arr.find(x => !x.pass);
-      const reason = dayPass ? "Within limits" : reasonFromFailed(firstFail?.failed || []);
+      const reason = dayPass
+        ? "Within limits"
+        : formatReasonFromValues({
+            ws50m: Number.isFinite(maxWind) ? Number(maxWind.toFixed(1)) : undefined,
+            hmax: Number.isFinite(maxSea) ? Number(maxSea.toFixed(1)) : undefined,
+            tp: Number.isFinite(maxTp) ? Number(maxTp.toFixed(1)) : undefined,
+          });
 
       return {
         day: dayNameFromISO(arr[0].time),
         date: ddmm,
-        maxWind: Number.isFinite(maxWind) ? maxWind : null,
-        maxSea: Number.isFinite(maxSea) ? maxSea : null,
-        maxTp: Number.isFinite(maxTp) ? maxTp : null,
-        status: dayPass ? "SUITABLE" : "NOT SUITABLE",
+        maxWind: Number.isFinite(maxWind) ? Number(maxWind.toFixed(1)) : null,
+        maxSea: Number.isFinite(maxSea) ? Number(maxSea.toFixed(1)) : null,
+        maxTp: Number.isFinite(maxTp) ? Number(maxTp.toFixed(1)) : null,
+        status: badgeFromPass(dayPass),
         reason,
       };
     });
 
-    // sort by date (using first point time)
+    // Sort by actual time of the first point in each day
     rows.sort((a, b) => {
-      const ta = new Date(`${new Date().getFullYear()}-${a.date.split("/")[1]}-${a.date.split("/")[0]}T00:00:00`).getTime();
-      const tb = new Date(`${new Date().getFullYear()}-${b.date.split("/")[1]}-${b.date.split("/")[0]}T00:00:00`).getTime();
-      return ta - tb;
+      const ta = pts.find((p) => ddmmFromISO(p.time) === a.date)?.time || "";
+      const tb = pts.find((p) => ddmmFromISO(p.time) === b.date)?.time || "";
+      return ta.localeCompare(tb);
     });
 
     return rows;
+  }, [data]);
+
+  const periodRows = useMemo(() => {
+    const pts = data?.points || [];
+    return pts.map((p) => {
+      const sea = p.hmax_ft;
+      const tp = p.tp_s;
+      const wind = p.ws50m_knots;
+
+      const reason = p.pass
+        ? "Within limits"
+        : formatReasonFromValues({
+            ws50m: wind !== undefined ? Number(wind.toFixed(1)) : undefined,
+            hmax: sea !== undefined ? Number(sea.toFixed(1)) : undefined,
+            tp: tp !== undefined ? Number(tp.toFixed(1)) : undefined,
+          });
+
+      return {
+        date: ddmmFromISO(p.time),
+        time: hhmmFromISO(p.time),
+        day: dayNameFromISO(p.time),
+        dir: p.dir || "—",
+        ws50m: wind ?? null,
+        hmax: sea ?? null,
+        tp: tp ?? null,
+        pass: p.pass,
+        status: p.pass ? "OK" : "NO",
+        reason,
+      };
+    });
   }, [data]);
 
   async function analyze(selectedFile: File) {
     setError(null);
     setData(null);
     setBusy(true);
+
     try {
       if (!apiBase) throw new Error("Missing NEXT_PUBLIC_API_BASE in Vercel environment variables.");
 
       const form = new FormData();
       form.append("file", selectedFile);
 
-      // IMPORTANT: we are using original criteria, but Sea uses Hmax.
-      // Your backend must evaluate against Hmax (hmax_ft) not hs_ft.
       const url =
         `${apiBase}/analyze` +
         `?ws50m_max_knots=${encodeURIComponent(CRITERIA.ws50mMax)}` +
@@ -221,11 +265,7 @@ export default function Page() {
           <div className="dropHint">Supports StormGeo weather forecast PDFs</div>
 
           <label className="fileBtn">
-            <input
-              type="file"
-              accept="application/pdf"
-              onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
-            />
+            <input type="file" accept="application/pdf" onChange={(e) => onPickFile(e.target.files?.[0] ?? null)} />
             {file ? file.name : "Choose PDF"}
           </label>
 
@@ -248,7 +288,9 @@ export default function Page() {
         <div className="card cardGood">
           <div className="cardLabel">Workable</div>
           <div className="cardValue">
-            {data ? `${workableCount} (${data.count_points ? Math.round((workableCount / data.count_points) * 100) : 0}%)` : "—"}
+            {data
+              ? `${workableCount} (${data.count_points ? Math.round((workableCount / data.count_points) * 100) : 0}%)`
+              : "—"}
           </div>
         </div>
 
@@ -262,11 +304,10 @@ export default function Page() {
         <section className={`banner ${allMeet ? "bannerOk" : "bannerNo"}`}>
           <div className="bannerIcon">{allMeet ? "✅" : "❌"}</div>
           <div>
-            <div className="bannerTitle">
-              {allMeet ? "All Periods Meet Criteria" : "Some Periods Do Not Meet Criteria"}
-            </div>
+            <div className="bannerTitle">{allMeet ? "All Periods Meet Criteria" : "Some Periods Do Not Meet Criteria"}</div>
             <div className="bannerSub">
-              Based on Wind (Ws50m) &lt; {CRITERIA.ws50mMax} kts, Sea (Hmax) &lt; {CRITERIA.hmaxMax} ft, and Tp &lt; {CRITERIA.tpMax} s
+              Based on Wind (Ws50m) &lt; {CRITERIA.ws50mMax} kts, Sea (Hmax) &lt; {CRITERIA.hmaxMax} ft, and Tp &lt;{" "}
+              {CRITERIA.tpMax} s
             </div>
           </div>
         </section>
@@ -308,9 +349,57 @@ export default function Page() {
                     {r.maxTp ?? "—"}
                   </td>
                   <td>
-                    <span className={`pill ${r.status === "SUITABLE" ? "pillOk" : "pillNo"}`}>
-                      {r.status}
-                    </span>
+                    <span className={`pill ${r.status === "SUITABLE" ? "pillOk" : "pillNo"}`}>{r.status}</span>
+                  </td>
+                  <td className="reason">{r.reason}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="tableCard" style={{ marginTop: 14 }}>
+        <div className="tableHeader">Periods</div>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>DATE</th>
+              <th>TIME</th>
+              <th>DAY</th>
+              <th>WIND DIR</th>
+              <th>WS50M (KTS)</th>
+              <th>HMAX (FT)</th>
+              <th>TP (S)</th>
+              <th>STATUS</th>
+              <th>REASON</th>
+            </tr>
+          </thead>
+          <tbody>
+            {periodRows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="emptyCell">
+                  Upload a StormGeo PDF to view periods.
+                </td>
+              </tr>
+            ) : (
+              periodRows.map((r, i) => (
+                <tr key={i}>
+                  <td className="mono">{r.date}</td>
+                  <td className="mono">{r.time}</td>
+                  <td className="mono">{r.day}</td>
+                  <td className="mono">{r.dir}</td>
+                  <td className={r.ws50m !== null && r.ws50m >= CRITERIA.ws50mMax ? "badNum" : "goodNum"}>
+                    {r.ws50m !== null ? Number(r.ws50m.toFixed(1)) : "—"}
+                  </td>
+                  <td className={r.hmax !== null && r.hmax >= CRITERIA.hmaxMax ? "badNum" : "goodNum"}>
+                    {r.hmax !== null ? Number(r.hmax.toFixed(1)) : "—"}
+                  </td>
+                  <td className={r.tp !== null && r.tp >= CRITERIA.tpMax ? "badNum" : "goodNum"}>
+                    {r.tp !== null ? Number(r.tp.toFixed(1)) : "—"}
+                  </td>
+                  <td>
+                    <span className={`pill ${r.pass ? "pillOk" : "pillNo"}`}>{r.pass ? "OK" : "NO"}</span>
                   </td>
                   <td className="reason">{r.reason}</td>
                 </tr>
