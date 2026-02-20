@@ -11,9 +11,7 @@ type Point = {
   failed: string[];
 };
 
-type Result = {
-  points: Point[];
-};
+type Result = { points: Point[] };
 
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
@@ -21,31 +19,25 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
 
   async function upload() {
-    setError(null);
-    setResult(null);
+    try {
+      setError(null);
+      setResult(null);
 
-    if (!file) {
-      setError("Please select a PDF first.");
-      return;
+      if (!file) return setError("Please select a PDF first.");
+
+      const apiBase = process.env.NEXT_PUBLIC_API_BASE;
+      if (!apiBase) return setError("Missing NEXT_PUBLIC_API_BASE in Vercel env variables.");
+
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch(`${apiBase}/analyze`, { method: "POST", body: form });
+      if (!res.ok) throw new Error(await res.text());
+
+      setResult((await res.json()) as Result);
+    } catch (e: any) {
+      setError(e?.message || "Upload failed");
     }
-
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE;
-    if (!apiBase) {
-      setError("Missing NEXT_PUBLIC_API_BASE in Vercel env variables.");
-      return;
-    }
-
-    const form = new FormData();
-    form.append("file", file);
-
-    const res = await fetch(`${apiBase}/analyze`, { method: "POST", body: form });
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error(txt || `HTTP ${res.status}`);
-    }
-
-    const data = (await res.json()) as Result;
-    setResult(data);
   }
 
   return (
