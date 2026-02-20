@@ -43,13 +43,26 @@ function ddmmFromISO(iso: string) {
   return `${dd}/${mm}`;
 }
 
-function reasonFromFailed(failed: string[]) {
-  if (!failed?.length) return "Within limits";
-  const joined = failed.join(" | ").toLowerCase();
-  if (joined.includes("tp")) return "Long swell";
-  if (joined.includes("hmax") || joined.includes("hs") || joined.includes("sea")) return "High sea";
-  if (joined.includes("ws50m") || joined.includes("wind")) return "High wind";
-  return failed.join(", ");
+function formatReasonFromValues(opts: {
+  ws50m?: number;
+  hmax?: number;
+  tp?: number;
+}) 
+
+{
+  const parts: string[] = [];
+
+  if (opts.hmax !== undefined && opts.hmax >= CRITERIA.hmaxMax) {
+    parts.push(`Sea ${opts.hmax}>${CRITERIA.hmaxMax}ft`);
+  }
+  if (opts.tp !== undefined && opts.tp >= CRITERIA.tpMax) {
+    parts.push(`Tp ${opts.tp}>${CRITERIA.tpMax}s`);
+  }
+  if (opts.ws50m !== undefined && opts.ws50m >= CRITERIA.ws50mMax) {
+    parts.push(`Wind ${opts.ws50m}>${CRITERIA.ws50mMax}kts`);
+  }
+
+  return parts.length ? parts.join(", ") : "Within limits";
 }
 
 export default function Page() {
