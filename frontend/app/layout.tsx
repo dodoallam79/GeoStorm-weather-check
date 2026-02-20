@@ -1,11 +1,12 @@
+import "./globals.css";
 import type { ReactNode } from "react";
 
-export const metadata = { title: "Weather GO/NO-GO" };
+export const metadata = { title: "Weather Criteria Checker" };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "Arial", padding: 20 }}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }
