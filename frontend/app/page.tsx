@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type Point = {
   time: string;
@@ -24,17 +24,17 @@ type Result = {
 };
 
 type Criteria = {
-  ws50mMax: number; // kts
-  hmaxMax: number; // ft
-  tpMax: number; // s (kept in logic, hidden in panel to match screenshot)
+  ws50mMax: number; // knots
+  hmaxMax: number;  // feet
+  tpMax: number;    // seconds (kept as original requirement)
   minConsecutive: number;
   tzOffset: string;
 };
 
 const DEFAULT_CRITERIA: Criteria = {
   ws50mMax: 22,
-  hmaxMax: 5, // screenshot shows 5ft
-  tpMax: 5.0, // keep original criteria in logic
+  hmaxMax: 5,  // screenshot shows 5 ft default
+  tpMax: 5.0,  // original criteria kept
   minConsecutive: 2,
   tzOffset: "+04:00",
 };
@@ -55,25 +55,24 @@ function hhmmFromISO(iso: string) {
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
 }
-function safeNum(n: number, decimals = 1) {
-  if (!Number.isFinite(n)) return n;
-  return Number(n.toFixed(decimals));
+function n1(x: number) {
+  return Number.isFinite(x) ? Number(x.toFixed(1)) : x;
 }
 
 /**
- * Reasons: include ALL failed criteria (per your requirement)
- * and match the style like: "Sea 7.5>5ft, Tp 6>5s, Wind 25>22kts"
+ * Build reason string including ALL failed criteria:
+ * "Sea 7.5>5ft, Tp 6>5s, Wind 25>22kts"
  */
-function formatReasonFromValues(criteria: Criteria, opts: { ws50m?: number; hmax?: number; tp?: number }) {
+function formatReason(criteria: Criteria, v: { ws50m?: number; hmax?: number; tp?: number }) {
   const parts: string[] = [];
-  if (opts.hmax !== undefined && Number.isFinite(opts.hmax) && opts.hmax > criteria.hmaxMax) {
-    parts.push(`Sea ${opts.hmax}>${criteria.hmaxMax}ft`);
+  if (v.hmax !== undefined && Number.isFinite(v.hmax) && v.hmax > criteria.hmaxMax) {
+    parts.push(`Sea ${n1(v.hmax)}>${criteria.hmaxMax}ft`);
   }
-  if (opts.tp !== undefined && Number.isFinite(opts.tp) && opts.tp > criteria.tpMax) {
-    parts.push(`Tp ${opts.tp}>${criteria.tpMax}s`);
+  if (v.tp !== undefined && Number.isFinite(v.tp) && v.tp > criteria.tpMax) {
+    parts.push(`Tp ${n1(v.tp)}>${criteria.tpMax}s`);
   }
-  if (opts.ws50m !== undefined && Number.isFinite(opts.ws50m) && opts.ws50m > criteria.ws50mMax) {
-    parts.push(`Wind ${opts.ws50m}>${criteria.ws50mMax}kts`);
+  if (v.ws50m !== undefined && Number.isFinite(v.ws50m) && v.ws50m > criteria.ws50mMax) {
+    parts.push(`Wind ${n1(v.ws50m)}>${criteria.ws50mMax}kts`);
   }
   return parts.length ? parts.join(", ") : "Within limits";
 }
@@ -85,17 +84,23 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // criteria (persisted)
   const [criteria, setCriteria] = useState<Criteria>(DEFAULT_CRITERIA);
 
-  // inline panel toggle (like screenshot)
+  // Inline criteria panel (like screenshot)
   const [showCriteriaPanel, setShowCriteriaPanel] = useState(false);
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
-  // inline panel drafts (only wind + sea shown like screenshot)
+  // Draft inputs (only Ws50m and Hmax shown like screenshot)
   const [draftWs50m, setDraftWs50m] = useState<number>(DEFAULT_CRITERIA.ws50mMax);
   const [draftHmax, setDraftHmax] = useState<number>(DEFAULT_CRITERIA.hmaxMax);
 
-  // Load criteria once
+  // API base
+  const apiBase = useMemo(() => {
+    const raw = process.env.NEXT_PUBLIC_API_BASE || "";
+    return raw.replace(/\/+$/, "");
+  }, []);
+
+  // Load saved criteria
   useEffect(() => {
     try {
       const raw = localStorage.getItem("weatherCriteria");
@@ -111,16 +116,11 @@ export default function Page() {
     }
   }, []);
 
-  // Keep drafts synced
+  // Sync drafts with criteria
   useEffect(() => {
     setDraftWs50m(criteria.ws50mMax);
     setDraftHmax(criteria.hmaxMax);
   }, [criteria.ws50mMax, criteria.hmaxMax]);
-
-  const apiBase = useMemo(() => {
-    const raw = process.env.NEXT_PUBLIC_API_BASE || "";
-    return raw.replace(/\/+$/, "");
-  }, []);
 
   const location = useMemo(() => {
     if (!file?.name) return "—";
@@ -136,38 +136,99 @@ export default function Page() {
 
   const workableCount = useMemo(() => (data?.points || []).filter((p) => p.pass).length, [data]);
   const notWorkableCount = useMemo(() => (data?.points || []).filter((p) => !p.pass).length, [data]);
-  const allMeet = useMemo(() => (data?.count_points || 0) > 0 && notWorkableCount === 0, [data?.count_points, notWorkableCount]);
+  const allMeet = useMemo(
+    () => (data?.count_points || 0) > 0 && notWorkableCount === 0,
+    [data?.count_points, notWorkableCount]
+  );
+
+  async function analyze(selectedFile: File, crit: Criteria) {
+    setError(null);
+    setBusy(true);
+    try {
+      if (!apiBase) throw new Error("Missing NEXT_PUBLIC_API_BASE in Vercel environment variables.");
+
+      const form = new FormData();
+      form.append("file", selectedFile);
+
+      // Keep original criteria: Tp is applied even if not shown on panel.
+      const url =
+        `${apiBase}/analyze` +
+        `?ws50m_max_knots=${encodeURIComponent(crit.ws50mMax)}` +
+        `&hmax_max_ft=${encodeURIComponent(crit.hmaxMax)}` +
+        `&tp_max_s=${encodeURIComponent(crit.tpMax)}` +
+        `&min_consecutive_points=${encodeURIComponent(crit.minConsecutive)}` +
+        `&tz_offset=${encodeURIComponent(crit.tzOffset)}`;
+
+      const res = await fetch(url, { method: "POST", body: form });
+      if (!res.ok) throw new Error(await res.text());
+
+      setData((await res.json()) as Result);
+    } catch (e: any) {
+      setData(null);
+      setError(e?.message || "Analyze failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onPickFile(f: File | null) {
+    if (!f) return;
+    setFile(f);
+    void analyze(f, criteria);
+  }
+
+  function toggleCriteriaPanel() {
+    setShowCriteriaPanel((v) => !v);
+    // Scroll to panel when opening
+    setTimeout(() => {
+      if (panelRef.current) panelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
+
+  function applyChanges() {
+    const cleaned: Criteria = {
+      ...criteria,
+      ws50mMax: Number(draftWs50m),
+      hmaxMax: Number(draftHmax),
+      // tpMax stays as original criteria (5.0) and remains hidden like screenshot
+    };
+
+    setCriteria(cleaned);
+    try {
+      localStorage.setItem("weatherCriteria", JSON.stringify(cleaned));
+    } catch {}
+
+    if (file) void analyze(file, cleaned);
+  }
 
   const dailySummary = useMemo(() => {
     const pts = data?.points || [];
     const byDate = new Map<string, Point[]>();
-
     for (const p of pts) {
-      const key = ddmmFromISO(p.time);
-      byDate.set(key, [...(byDate.get(key) || []), p]);
+      const k = ddmmFromISO(p.time);
+      byDate.set(k, [...(byDate.get(k) || []), p]);
     }
 
     const rows = Array.from(byDate.entries()).map(([ddmm, arr]) => {
       const maxWind = Math.max(...arr.map((x) => x.ws50m_knots ?? -Infinity));
       const maxSea = Math.max(...arr.map((x) => x.hmax_ft ?? -Infinity));
       const maxTp = Math.max(...arr.map((x) => x.tp_s ?? -Infinity));
-
       const dayPass = arr.every((x) => x.pass);
 
       const reason = dayPass
         ? "Within limits"
-        : formatReasonFromValues(criteria, {
-            ws50m: Number.isFinite(maxWind) ? safeNum(maxWind, 1) : undefined,
-            hmax: Number.isFinite(maxSea) ? safeNum(maxSea, 1) : undefined,
-            tp: Number.isFinite(maxTp) ? safeNum(maxTp, 1) : undefined,
+        : formatReason(criteria, {
+            ws50m: Number.isFinite(maxWind) ? maxWind : undefined,
+            hmax: Number.isFinite(maxSea) ? maxSea : undefined,
+            tp: Number.isFinite(maxTp) ? maxTp : undefined,
           });
 
       return {
         day: dayNameFromISO(arr[0].time),
         date: ddmm,
-        maxWind: Number.isFinite(maxWind) ? safeNum(maxWind, 1) : null,
-        maxSea: Number.isFinite(maxSea) ? safeNum(maxSea, 1) : null,
-        maxTp: Number.isFinite(maxTp) ? safeNum(maxTp, 1) : null,
+        maxWind: Number.isFinite(maxWind) ? n1(maxWind) : null,
+        maxSea: Number.isFinite(maxSea) ? n1(maxSea) : null,
+        maxTp: Number.isFinite(maxTp) ? n1(maxTp) : null,
         status: dayPass ? "SUITABLE" : "NOT SUITABLE",
         reason,
       };
@@ -185,16 +246,12 @@ export default function Page() {
   const periodRows = useMemo(() => {
     const pts = data?.points || [];
     return pts.map((p) => {
-      const sea = p.hmax_ft;
-      const tp = p.tp_s;
-      const wind = p.ws50m_knots;
-
       const reason = p.pass
         ? "Within limits"
-        : formatReasonFromValues(criteria, {
-            ws50m: wind !== undefined ? safeNum(wind, 1) : undefined,
-            hmax: sea !== undefined ? safeNum(sea, 1) : undefined,
-            tp: tp !== undefined ? safeNum(tp, 1) : undefined,
+        : formatReason(criteria, {
+            ws50m: p.ws50m_knots,
+            hmax: p.hmax_ft,
+            tp: p.tp_s,
           });
 
       return {
@@ -202,66 +259,14 @@ export default function Page() {
         time: hhmmFromISO(p.time),
         day: dayNameFromISO(p.time),
         dir: p.dir || "—",
-        ws50m: wind ?? null,
-        hmax: sea ?? null,
-        tp: tp ?? null,
+        ws50m: p.ws50m_knots ?? null,
+        hmax: p.hmax_ft ?? null,
+        tp: p.tp_s ?? null,
         pass: p.pass,
         reason,
       };
     });
   }, [data, criteria]);
-
-  async function analyze(selectedFile: File, crit: Criteria) {
-    setError(null);
-    setBusy(true);
-    try {
-      if (!apiBase) throw new Error("Missing NEXT_PUBLIC_API_BASE in Vercel environment variables.");
-
-      const form = new FormData();
-      form.append("file", selectedFile);
-
-      // Pass criteria to backend (Hmax + Tp kept, even if Tp not shown in panel)
-      const url =
-        `${apiBase}/analyze` +
-        `?ws50m_max_knots=${encodeURIComponent(crit.ws50mMax)}` +
-        `&hmax_max_ft=${encodeURIComponent(crit.hmaxMax)}` +
-        `&tp_max_s=${encodeURIComponent(crit.tpMax)}` +
-        `&min_consecutive_points=${encodeURIComponent(crit.minConsecutive)}` +
-        `&tz_offset=${encodeURIComponent(crit.tzOffset)}`;
-
-      const res = await fetch(url, { method: "POST", body: form });
-      if (!res.ok) throw new Error(await res.text());
-
-      const json = (await res.json()) as Result;
-      setData(json);
-    } catch (e: any) {
-      setError(e?.message || "Analyze failed");
-      setData(null);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function onPickFile(f: File | null) {
-    if (!f) return;
-    setFile(f);
-    void analyze(f, criteria);
-  }
-
-  function applyCriteria() {
-    const cleaned: Criteria = {
-      ...criteria,
-      ws50mMax: Number(draftWs50m),
-      hmaxMax: Number(draftHmax),
-    };
-
-    setCriteria(cleaned);
-    try {
-      localStorage.setItem("weatherCriteria", JSON.stringify(cleaned));
-    } catch {}
-
-    if (file) void analyze(file, cleaned);
-  }
 
   return (
     <div className="page">
@@ -274,14 +279,14 @@ export default function Page() {
           </div>
         </div>
 
-        <button className="ghostBtn" type="button" onClick={() => setShowCriteriaPanel((v) => !v)}>
+        <button className="ghostBtn" type="button" onClick={toggleCriteriaPanel}>
           <span className="gear">⚙</span> Criteria
         </button>
       </header>
 
-      {/* Inline criteria settings panel (like screenshot) */}
+      {/* Inline criteria panel (like screenshot) */}
       {showCriteriaPanel && (
-        <section className="criteriaPanel">
+        <section className="criteriaPanel" ref={panelRef}>
           <div className="criteriaPanelTitle">
             <span className="criteriaPanelIcon">⚙</span>
             <span>Work Criteria Settings</span>
@@ -311,13 +316,13 @@ export default function Page() {
             </div>
           </div>
 
-          <button className="criteriaApplyBtn" type="button" onClick={applyCriteria}>
+          <button className="criteriaApplyBtn" type="button" onClick={applyChanges}>
             Apply Changes
           </button>
         </section>
       )}
 
-      {/* Chips (keep like screenshot using ≤) */}
+      {/* Chips exactly like screenshot (≤) */}
       <section className="criteriaRow">
         <div className="chip">
           <span className="chipIcon">〰</span>
@@ -470,13 +475,13 @@ export default function Page() {
                   <td className="mono">{r.day}</td>
                   <td className="mono">{r.dir}</td>
                   <td className={r.ws50m !== null && r.ws50m > criteria.ws50mMax ? "badNum" : "goodNum"}>
-                    {r.ws50m !== null ? safeNum(r.ws50m, 1) : "—"}
+                    {r.ws50m !== null ? n1(r.ws50m) : "—"}
                   </td>
                   <td className={r.hmax !== null && r.hmax > criteria.hmaxMax ? "badNum" : "goodNum"}>
-                    {r.hmax !== null ? safeNum(r.hmax, 1) : "—"}
+                    {r.hmax !== null ? n1(r.hmax) : "—"}
                   </td>
                   <td className={r.tp !== null && r.tp > criteria.tpMax ? "badNum" : "goodNum"}>
-                    {r.tp !== null ? safeNum(r.tp, 1) : "—"}
+                    {r.tp !== null ? n1(r.tp) : "—"}
                   </td>
                   <td>
                     <span className={`pill ${r.pass ? "pillOk" : "pillNo"}`}>{r.pass ? "OK" : "NO"}</span>
