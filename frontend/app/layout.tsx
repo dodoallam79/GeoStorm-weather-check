@@ -1,12 +1,20 @@
+import type { Metadata } from "next";
 import "./globals.css";
-import type { ReactNode } from "react";
 
-export const metadata = { title: "Weather Criteria Checker" };
+export const metadata: Metadata = {
+  title: "Weather Criteria Checker",
+  description: "StormGeo Forecast Analyzer",
+  viewport: "width=device-width, initial-scale=1.0",
+};
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-     <body className="font-sans antialiased">
+      <head>
+        {/* Helps match the original “dark” rendering behavior */}
+        <meta name="color-scheme" content="dark" />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }
