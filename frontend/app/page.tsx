@@ -25,16 +25,16 @@ type Result = {
 
 type Criteria = {
   ws50mMax: number; // knots
-  hmaxMax: number;  // feet
-  tpMax: number;    // seconds (kept as original requirement)
+  hmaxMax: number; // feet
+  tpMax: number; // seconds (kept as original requirement)
   minConsecutive: number;
   tzOffset: string;
 };
 
 const DEFAULT_CRITERIA: Criteria = {
   ws50mMax: 22,
-  hmaxMax: 5,  // screenshot shows 5 ft default
-  tpMax: 5.0,  // original criteria kept
+  hmaxMax: 5, // matches screenshot default
+  tpMax: 5.0, // original requirement kept (not shown in panel)
   minConsecutive: 2,
   tzOffset: "+04:00",
 };
@@ -59,10 +59,6 @@ function n1(x: number) {
   return Number.isFinite(x) ? Number(x.toFixed(1)) : x;
 }
 
-/**
- * Build reason string including ALL failed criteria:
- * "Sea 7.5>5ft, Tp 6>5s, Wind 25>22kts"
- */
 function formatReason(criteria: Criteria, v: { ws50m?: number; hmax?: number; tp?: number }) {
   const parts: string[] = [];
   if (v.hmax !== undefined && Number.isFinite(v.hmax) && v.hmax > criteria.hmaxMax) {
@@ -88,13 +84,12 @@ export default function Page() {
 
   // Inline criteria panel (like screenshot)
   const [showCriteriaPanel, setShowCriteriaPanel] = useState(false);
-  const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
 
-  // Draft inputs (only Ws50m and Hmax shown like screenshot)
+  // Draft inputs (only wind + sea shown like screenshot)
   const [draftWs50m, setDraftWs50m] = useState<number>(DEFAULT_CRITERIA.ws50mMax);
   const [draftHmax, setDraftHmax] = useState<number>(DEFAULT_CRITERIA.hmaxMax);
 
-  // API base
   const apiBase = useMemo(() => {
     const raw = process.env.NEXT_PUBLIC_API_BASE || "";
     return raw.replace(/\/+$/, "");
@@ -150,7 +145,6 @@ export default function Page() {
       const form = new FormData();
       form.append("file", selectedFile);
 
-      // Keep original criteria: Tp is applied even if not shown on panel.
       const url =
         `${apiBase}/analyze` +
         `?ws50m_max_knots=${encodeURIComponent(crit.ws50mMax)}` +
@@ -179,9 +173,8 @@ export default function Page() {
 
   function toggleCriteriaPanel() {
     setShowCriteriaPanel((v) => !v);
-    // Scroll to panel when opening
     setTimeout(() => {
-      if (panelRef.current) panelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      panelRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
     }, 0);
   }
 
@@ -190,7 +183,7 @@ export default function Page() {
       ...criteria,
       ws50mMax: Number(draftWs50m),
       hmaxMax: Number(draftHmax),
-      // tpMax stays as original criteria (5.0) and remains hidden like screenshot
+      // tpMax remains original and hidden
     };
 
     setCriteria(cleaned);
@@ -284,19 +277,18 @@ export default function Page() {
         </button>
       </header>
 
-      {/* Inline criteria panel (like screenshot) */}
+      {/* Criteria Card (matches screenshot layout) */}
       {showCriteriaPanel && (
-        <section className="criteriaPanel" ref={panelRef}>
-          <div className="criteriaPanelTitle">
-            <span className="criteriaPanelIcon">⚙</span>
+        <section className="criteriaCard" ref={(el) => (panelRef.current = el)}>
+          <div className="criteriaHeader">
+            <span className="criteriaIcon">⚙</span>
             <span>Work Criteria Settings</span>
           </div>
 
-          <div className="criteriaGrid">
+          <div className="criteriaInputs">
             <div className="criteriaField">
-              <div className="criteriaLabel">Maximum Wind Speed (Ws50m) - knots</div>
+              <label>Maximum Wind Speed (Ws50m) - knots</label>
               <input
-                className="criteriaInput"
                 type="number"
                 step="0.1"
                 value={draftWs50m}
@@ -305,9 +297,8 @@ export default function Page() {
             </div>
 
             <div className="criteriaField">
-              <div className="criteriaLabel">Maximum Sea Height (Hmax) - feet</div>
+              <label>Maximum Sea Height (Hmax) - feet</label>
               <input
-                className="criteriaInput"
                 type="number"
                 step="0.1"
                 value={draftHmax}
@@ -316,13 +307,13 @@ export default function Page() {
             </div>
           </div>
 
-          <button className="criteriaApplyBtn" type="button" onClick={applyChanges}>
+          <button className="applyBtn" type="button" onClick={applyChanges}>
             Apply Changes
           </button>
         </section>
       )}
 
-      {/* Chips exactly like screenshot (≤) */}
+      {/* Chips like screenshot (≤) */}
       <section className="criteriaRow">
         <div className="chip">
           <span className="chipIcon">〰</span>
