@@ -25,16 +25,16 @@ type Result = {
 
 type Criteria = {
   ws50mMax: number; // kts
-  hmaxMax: number;  // ft
-  tpMax: number;    // s
+  hmaxMax: number; // ft
+  tpMax: number; // s (kept in logic, hidden in panel to match screenshot)
   minConsecutive: number;
   tzOffset: string;
 };
 
 const DEFAULT_CRITERIA: Criteria = {
   ws50mMax: 22,
-  hmaxMax: 6,
-  tpMax: 5.0,
+  hmaxMax: 5, // screenshot shows 5ft
+  tpMax: 5.0, // keep original criteria in logic
   minConsecutive: 2,
   tzOffset: "+04:00",
 };
@@ -55,25 +55,27 @@ function hhmmFromISO(iso: string) {
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
 }
+function safeNum(n: number, decimals = 1) {
+  if (!Number.isFinite(n)) return n;
+  return Number(n.toFixed(decimals));
+}
 
+/**
+ * Reasons: include ALL failed criteria (per your requirement)
+ * and match the style like: "Sea 7.5>5ft, Tp 6>5s, Wind 25>22kts"
+ */
 function formatReasonFromValues(criteria: Criteria, opts: { ws50m?: number; hmax?: number; tp?: number }) {
   const parts: string[] = [];
-  if (opts.hmax !== undefined && Number.isFinite(opts.hmax) && opts.hmax >= criteria.hmaxMax) {
+  if (opts.hmax !== undefined && Number.isFinite(opts.hmax) && opts.hmax > criteria.hmaxMax) {
     parts.push(`Sea ${opts.hmax}>${criteria.hmaxMax}ft`);
   }
-  if (opts.tp !== undefined && Number.isFinite(opts.tp) && opts.tp >= criteria.tpMax) {
+  if (opts.tp !== undefined && Number.isFinite(opts.tp) && opts.tp > criteria.tpMax) {
     parts.push(`Tp ${opts.tp}>${criteria.tpMax}s`);
   }
-  if (opts.ws50m !== undefined && Number.isFinite(opts.ws50m) && opts.ws50m >= criteria.ws50mMax) {
+  if (opts.ws50m !== undefined && Number.isFinite(opts.ws50m) && opts.ws50m > criteria.ws50mMax) {
     parts.push(`Wind ${opts.ws50m}>${criteria.ws50mMax}kts`);
   }
   return parts.length ? parts.join(", ") : "Within limits";
-}
-
-function safeNum(n: number, decimals = 1) {
-  if (!Number.isFinite(n)) return n;
-  const f = Number(n.toFixed(decimals));
-  return f;
 }
 
 export default function Page() {
@@ -83,32 +85,37 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // ---- criteria state (persisted) ----
+  // criteria (persisted)
   const [criteria, setCriteria] = useState<Criteria>(DEFAULT_CRITERIA);
-  const [criteriaOpen, setCriteriaOpen] = useState(false);
 
-  // draft fields for modal
-  const [draft, setDraft] = useState<Criteria>(DEFAULT_CRITERIA);
+  // inline panel toggle (like screenshot)
+  const [showCriteriaPanel, setShowCriteriaPanel] = useState(false);
 
-  // Load criteria from localStorage once
+  // inline panel drafts (only wind + sea shown like screenshot)
+  const [draftWs50m, setDraftWs50m] = useState<number>(DEFAULT_CRITERIA.ws50mMax);
+  const [draftHmax, setDraftHmax] = useState<number>(DEFAULT_CRITERIA.hmaxMax);
+
+  // Load criteria once
   useEffect(() => {
     try {
       const raw = localStorage.getItem("weatherCriteria");
       if (raw) {
         const parsed = JSON.parse(raw);
-        const merged: Criteria = {
-          ...DEFAULT_CRITERIA,
-          ...parsed,
-        };
+        const merged: Criteria = { ...DEFAULT_CRITERIA, ...parsed };
         setCriteria(merged);
-        setDraft(merged);
       } else {
-        setDraft(DEFAULT_CRITERIA);
+        setCriteria(DEFAULT_CRITERIA);
       }
     } catch {
-      setDraft(DEFAULT_CRITERIA);
+      setCriteria(DEFAULT_CRITERIA);
     }
   }, []);
+
+  // Keep drafts synced
+  useEffect(() => {
+    setDraftWs50m(criteria.ws50mMax);
+    setDraftHmax(criteria.hmaxMax);
+  }, [criteria.ws50mMax, criteria.hmaxMax]);
 
   const apiBase = useMemo(() => {
     const raw = process.env.NEXT_PUBLIC_API_BASE || "";
@@ -122,7 +129,6 @@ export default function Page() {
       n.match(/_(ABK[_-]?FIELD)/i) ||
       n.match(/_([A-Z]+_[A-Z]+)_\d{6,}/i) ||
       n.match(/_([A-Z]+_[A-Z]+)_/i);
-
     const rawLoc = m?.[1] || "";
     const cleaned = rawLoc.replace(/[-_]/g, " ").trim();
     return cleaned ? cleaned.toUpperCase() : "—";
@@ -214,6 +220,7 @@ export default function Page() {
       const form = new FormData();
       form.append("file", selectedFile);
 
+      // Pass criteria to backend (Hmax + Tp kept, even if Tp not shown in panel)
       const url =
         `${apiBase}/analyze` +
         `?ws50m_max_knots=${encodeURIComponent(crit.ws50mMax)}` +
@@ -241,33 +248,18 @@ export default function Page() {
     void analyze(f, criteria);
   }
 
-  function openCriteria() {
-    setDraft(criteria);
-    setCriteriaOpen(true);
-  }
-
-  function closeCriteria() {
-    setCriteriaOpen(false);
-  }
-
-  function saveCriteria() {
-    // basic validation
+  function applyCriteria() {
     const cleaned: Criteria = {
-      ws50mMax: Number(draft.ws50mMax),
-      hmaxMax: Number(draft.hmaxMax),
-      tpMax: Number(draft.tpMax),
-      minConsecutive: Math.max(1, Math.floor(Number(draft.minConsecutive || 1))),
-      tzOffset: (draft.tzOffset || "+04:00").trim(),
+      ...criteria,
+      ws50mMax: Number(draftWs50m),
+      hmaxMax: Number(draftHmax),
     };
 
     setCriteria(cleaned);
-    setCriteriaOpen(false);
-
     try {
       localStorage.setItem("weatherCriteria", JSON.stringify(cleaned));
     } catch {}
 
-    // re-run if file already selected
     if (file) void analyze(file, cleaned);
   }
 
@@ -281,26 +273,63 @@ export default function Page() {
             <div className="subtitle">StormGeo Forecast Analyzer</div>
           </div>
         </div>
-        <button className="ghostBtn" type="button" onClick={openCriteria}>
+
+        <button className="ghostBtn" type="button" onClick={() => setShowCriteriaPanel((v) => !v)}>
           <span className="gear">⚙</span> Criteria
         </button>
       </header>
 
+      {/* Inline criteria settings panel (like screenshot) */}
+      {showCriteriaPanel && (
+        <section className="criteriaPanel">
+          <div className="criteriaPanelTitle">
+            <span className="criteriaPanelIcon">⚙</span>
+            <span>Work Criteria Settings</span>
+          </div>
+
+          <div className="criteriaGrid">
+            <div className="criteriaField">
+              <div className="criteriaLabel">Maximum Wind Speed (Ws50m) - knots</div>
+              <input
+                className="criteriaInput"
+                type="number"
+                step="0.1"
+                value={draftWs50m}
+                onChange={(e) => setDraftWs50m(Number(e.target.value))}
+              />
+            </div>
+
+            <div className="criteriaField">
+              <div className="criteriaLabel">Maximum Sea Height (Hmax) - feet</div>
+              <input
+                className="criteriaInput"
+                type="number"
+                step="0.1"
+                value={draftHmax}
+                onChange={(e) => setDraftHmax(Number(e.target.value))}
+              />
+            </div>
+          </div>
+
+          <button className="criteriaApplyBtn" type="button" onClick={applyCriteria}>
+            Apply Changes
+          </button>
+        </section>
+      )}
+
+      {/* Chips (keep like screenshot using ≤) */}
       <section className="criteriaRow">
         <div className="chip">
           <span className="chipIcon">〰</span>
-          Wind (Ws50m): <b>&lt; {criteria.ws50mMax} kts</b>
+          Wind (Ws50m): <b>≤ {criteria.ws50mMax} kts</b>
         </div>
         <div className="chip">
           <span className="chipIcon">≋</span>
-          Sea (Hmax): <b>&lt; {criteria.hmaxMax} ft</b>
-        </div>
-        <div className="chip">
-          <span className="chipIcon">⟳</span>
-          Tp: <b>&lt; {criteria.tpMax} s</b>
+          Sea (Hmax): <b>≤ {criteria.hmaxMax} ft</b>
         </div>
       </section>
 
+      {/* Dropzone */}
       <section
         className={`dropzone ${dragOver ? "dragOver" : ""}`}
         onDragOver={(e) => {
@@ -330,6 +359,7 @@ export default function Page() {
         </div>
       </section>
 
+      {/* KPI cards */}
       <section className="cards">
         <div className="card">
           <div className="cardLabel">Location</div>
@@ -354,18 +384,20 @@ export default function Page() {
         </div>
       </section>
 
+      {/* Banner */}
       {data && (
         <section className={`banner ${allMeet ? "bannerOk" : "bannerNo"}`}>
           <div className="bannerIcon">{allMeet ? "✅" : "❌"}</div>
           <div>
             <div className="bannerTitle">{allMeet ? "All Periods Meet Criteria" : "Some Periods Do Not Meet Criteria"}</div>
             <div className="bannerSub">
-              Based on Wind (Ws50m) &lt; {criteria.ws50mMax} kts, Sea (Hmax) &lt; {criteria.hmaxMax} ft, and Tp &lt; {criteria.tpMax} s
+              Based on Wind (Ws50m) ≤ {criteria.ws50mMax} kts and Sea (Hmax) ≤ {criteria.hmaxMax} ft
             </div>
           </div>
         </section>
       )}
 
+      {/* Daily Summary */}
       <section className="tableCard">
         <div className="tableHeader">Daily Summary</div>
         <table className="tbl">
@@ -392,9 +424,9 @@ export default function Page() {
                 <tr key={i}>
                   <td className="mono">{r.day}</td>
                   <td className="mono">{r.date}</td>
-                  <td className={r.maxWind !== null && r.maxWind >= criteria.ws50mMax ? "badNum" : "goodNum"}>{r.maxWind ?? "—"}</td>
-                  <td className={r.maxSea !== null && r.maxSea >= criteria.hmaxMax ? "badNum" : "goodNum"}>{r.maxSea ?? "—"}</td>
-                  <td className={r.maxTp !== null && r.maxTp >= criteria.tpMax ? "badNum" : "goodNum"}>{r.maxTp ?? "—"}</td>
+                  <td className={r.maxWind !== null && r.maxWind > criteria.ws50mMax ? "badNum" : "goodNum"}>{r.maxWind ?? "—"}</td>
+                  <td className={r.maxSea !== null && r.maxSea > criteria.hmaxMax ? "badNum" : "goodNum"}>{r.maxSea ?? "—"}</td>
+                  <td className={r.maxTp !== null && r.maxTp > criteria.tpMax ? "badNum" : "goodNum"}>{r.maxTp ?? "—"}</td>
                   <td>
                     <span className={`pill ${r.status === "SUITABLE" ? "pillOk" : "pillNo"}`}>{r.status}</span>
                   </td>
@@ -406,6 +438,7 @@ export default function Page() {
         </table>
       </section>
 
+      {/* Periods */}
       <section className="tableCard" style={{ marginTop: 14 }}>
         <div className="tableHeader">Periods</div>
         <table className="tbl">
@@ -436,13 +469,13 @@ export default function Page() {
                   <td className="mono">{r.time}</td>
                   <td className="mono">{r.day}</td>
                   <td className="mono">{r.dir}</td>
-                  <td className={r.ws50m !== null && r.ws50m >= criteria.ws50mMax ? "badNum" : "goodNum"}>
+                  <td className={r.ws50m !== null && r.ws50m > criteria.ws50mMax ? "badNum" : "goodNum"}>
                     {r.ws50m !== null ? safeNum(r.ws50m, 1) : "—"}
                   </td>
-                  <td className={r.hmax !== null && r.hmax >= criteria.hmaxMax ? "badNum" : "goodNum"}>
+                  <td className={r.hmax !== null && r.hmax > criteria.hmaxMax ? "badNum" : "goodNum"}>
                     {r.hmax !== null ? safeNum(r.hmax, 1) : "—"}
                   </td>
-                  <td className={r.tp !== null && r.tp >= criteria.tpMax ? "badNum" : "goodNum"}>
+                  <td className={r.tp !== null && r.tp > criteria.tpMax ? "badNum" : "goodNum"}>
                     {r.tp !== null ? safeNum(r.tp, 1) : "—"}
                   </td>
                   <td>
@@ -455,105 +488,6 @@ export default function Page() {
           </tbody>
         </table>
       </section>
-
-      {/* Criteria Modal */}
-      {criteriaOpen && (
-        <div className="modalBackdrop" onClick={closeCriteria} role="presentation">
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modalHeader">
-              <div className="modalTitle">Edit Criteria</div>
-              <button className="modalClose" onClick={closeCriteria} aria-label="Close">
-                ✕
-              </button>
-            </div>
-
-            <div className="modalBody">
-              <div className="fieldRow">
-                <div className="field">
-                  <div className="fieldLabel">Wind (Ws50m) max (kts)</div>
-                  <input
-                    className="fieldInput"
-                    type="number"
-                    step="0.1"
-                    value={draft.ws50mMax}
-                    onChange={(e) => setDraft((d) => ({ ...d, ws50mMax: Number(e.target.value) }))}
-                  />
-                </div>
-
-                <div className="field">
-                  <div className="fieldLabel">Sea (Hmax) max (ft)</div>
-                  <input
-                    className="fieldInput"
-                    type="number"
-                    step="0.1"
-                    value={draft.hmaxMax}
-                    onChange={(e) => setDraft((d) => ({ ...d, hmaxMax: Number(e.target.value) }))}
-                  />
-                </div>
-
-                <div className="field">
-                  <div className="fieldLabel">Tp max (s)</div>
-                  <input
-                    className="fieldInput"
-                    type="number"
-                    step="0.1"
-                    value={draft.tpMax}
-                    onChange={(e) => setDraft((d) => ({ ...d, tpMax: Number(e.target.value) }))}
-                  />
-                </div>
-              </div>
-
-              <div className="fieldRow" style={{ marginTop: 12 }}>
-                <div className="field">
-                  <div className="fieldLabel">Min consecutive periods</div>
-                  <input
-                    className="fieldInput"
-                    type="number"
-                    step="1"
-                    value={draft.minConsecutive}
-                    onChange={(e) => setDraft((d) => ({ ...d, minConsecutive: Number(e.target.value) }))}
-                  />
-                </div>
-
-                <div className="field">
-                  <div className="fieldLabel">Timezone offset</div>
-                  <input
-                    className="fieldInput"
-                    type="text"
-                    value={draft.tzOffset}
-                    onChange={(e) => setDraft((d) => ({ ...d, tzOffset: e.target.value }))}
-                    placeholder="+04:00"
-                  />
-                </div>
-
-                <div className="field" style={{ alignSelf: "end" }}>
-                  <button
-                    className="linkBtn"
-                    type="button"
-                    onClick={() => setDraft(DEFAULT_CRITERIA)}
-                    title="Reset to default criteria"
-                  >
-                    Reset to default
-                  </button>
-                </div>
-              </div>
-
-              <div className="hint">
-                Notes: This panel saves your settings in your browser. Changing criteria automatically re-checks the same PDF (if already uploaded).
-              </div>
-            </div>
-
-            <div className="modalFooter">
-              <button className="ghostBtn" type="button" onClick={closeCriteria}>
-                Cancel
-              </button>
-              <button className="primaryBtn" type="button" onClick={saveCriteria}>
-                Save & Recalculate
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
