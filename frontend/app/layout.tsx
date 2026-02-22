@@ -6,7 +6,7 @@ export const metadata = { title: "Weather Criteria Checker" };
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+     <body className="font-sans antialiased">
     </html>
   );
 }
